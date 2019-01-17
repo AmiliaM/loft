@@ -1,78 +1,144 @@
-extern crate reqwest;
-
-use reqwest::{Error, header, Client};
-
 #[macro_use] extern crate serde_derive;
-#[derive(Deserialize)]
-struct Member {
-    user: User
+use websocket::{ClientBuilder, OwnedMessage};
+use futures::future::{self, Future};
+use futures::stream::Stream;
+use futures::sync::mpsc;
+use futures::sink::Sink;
+use tokio::timer::Interval;
+mod api;
+use std::time::Duration;
+use self::api::LoftBot;
+use serde_json::json;
+
+#[derive(Debug, Deserialize)]
+struct ReadyMsg {
+    session_id: String,
 }
 
-#[derive(Deserialize)]
-struct User {
-    username: String,
-    discriminator: String,
-    id: String,
+#[derive(Debug, Deserialize)]
+struct HelloMsg {
+    heartbeat_interval: usize,
 }
 
-#[derive(Deserialize)]
-struct Channel {
-    name: String,
-    id: String,
-    #[serde(rename = "type")]
-    ty: i8,
+#[derive(Debug)]
+enum Event {
+    Ready(ReadyMsg),
+    Hello(HelloMsg), 
+    Heartbeat,
+    SendHeartbeat,
+    Unknown,
 }
 
-#[derive(Serialize)]
-struct Message {
-    content: String,
-}
-
-struct LoftBot {
-    client: Client,
-    guild_id: String,
-}
-
-impl LoftBot {
-    fn new(guild_id: String) -> Result<LoftBot, Error> {
-        let mut headers = header::HeaderMap::new();
-        headers.insert(header::USER_AGENT, 
-            header::HeaderValue::from_static("DiscordBot (bogodynamics.io, 1.0)"));
-        let token = "Bot NTEyMDgxODQ0MzQzMTQ0NDU4.Dxp1hw.7iC-_L8jx8Mf3A8RK3K7IRFQd4w";
-        headers.insert(header::AUTHORIZATION, 
-            header::HeaderValue::from_static(token));
-        let client = Client::builder()
-            .default_headers(headers)
-            .build()?;
-        Ok(LoftBot {
-            client,
-            guild_id
-        } )
-    }
-    fn get_channels(&self) -> Result<Vec<Channel>, Error> {
-        let url = &format!("https://discordapp.com/api/v6/guilds/{}/channels", self.guild_id);
-        let mut body: Vec<Channel> = self.client.get(url).send()?.json()?;
-        body.retain(|x| x.ty == 0);
-        Ok(body)
-    }
-    fn get_online_members(&self) -> Result<Vec<Member>, Error> {
-        let url = &format!("https://discordapp.com/api/v6/guilds/{}/members", self.guild_id);
-        let body: Vec<Member> = self.client.get(url).send()?.json()?;
-        Ok(body)
-    }
-    fn create_message(&self, message: Message, channel_id: String) -> Result<(), Error> {
-        let url = &format!("https://discordapp.com/api/v6/channes/{}/messages", channel_id);
-        let res = self.client.post(url).form(&message).send()?.text()?;
-        println!("{}", res);
-        Ok(())
+impl Event {
+    fn from_payload(p: Payload) -> Result<Event,failure::Error> {
+        Ok(match p.op {
+            10 => Event::Hello(serde_json::from_value(p.d)?),
+            _ => Event::Unknown,
+        })
     }
 }
 
-fn main() -> Result<(), Error> {
+#[derive(Deserialize, Serialize)]
+struct Payload {
+    op: i8,
+    d: serde_json::Value,
+    s: Option<usize>, 
+    t: Option<String>,
+}
+
+
+
+fn main() -> Result<(), failure::Error> {
     let guild_id: String = String::from("533354016818593846");
-    let bot = LoftBot::new(guild_id)?;
+    let mut bot = LoftBot::new(guild_id)?;
+    println!("{}", bot.gateway);
     //let result = bot.get_channels()?;
     //println!("{}", result);
+    let runner = ClientBuilder::new(&bot.gateway)?
+        .async_connect_secure(None)
+        .map_err(|x| failure::Error::from(x))
+        .and_then(move |(c, _)| {
+            let (w, reader) = c.split();
+            let (tx, rx) = mpsc::channel(1024);
+            let (stx, srx) = mpsc::channel(1024);
+            let tx2 = tx.clone();
+            tokio::spawn(
+                srx.inspect(|x| println!("send: {:?}", x)).fold(w, |w, x| w.send(x).map_err(|x| println!("send err: {}", x))).map(|_| ())
+            );
+            tokio::spawn(
+                rx.map_err(|_| failure::err_msg("stream err")).for_each(move |event| {
+                    let tx2 = tx2.clone();
+                    let stx = stx.clone();
+                    match event {
+                        Event::Hello(data) => {
+                            tokio::spawn(
+                                Interval::new(tokio::clock::now(), Duration::from_secs(data.heartbeat_interval as u64)).map(|_| Event::SendHeartbeat).map_err(|x| failure::Error::from(x)).forward(tx2)
+                                    .map(|_| ()).map_err(|e| println!("timer err: {}", e))
+                            );
+                            let ident = Payload {
+                                op: 1,
+                                d: json!(
+                                    {
+                                        "token": bot.token,
+                                        "properties": {
+                                            "$os": "macos",
+                                            "$browser": "loft",
+                                            "$device": "loft"
+                                        },
+                                        "compress": false,
+                                    }
+                                ),
+                                s: None,
+                                t: None,
+                            }; 
+                            let body = serde_json::to_string(&ident)?;
+                            tokio::spawn(
+                                stx.send(OwnedMessage::Text(body)).map(|_| ()).map_err(|e| println!("send err: {}", e))
+                            );
+                        },
+                        Event::Heartbeat => println!("Received heartbeat"),
+                        Event::SendHeartbeat => {
+                            let hb = Payload {
+                                op: 1,
+                                d: match bot.sequence {
+                                    None => serde_json::Value::Null,
+                                    Some(n) => serde_json::Value::Number(n.into()),
+                                },
+                                s: None,
+                                t: None,
+                            }; 
+                            let body = serde_json::to_string(&hb)?;
+                            tokio::spawn(
+                                stx.send(OwnedMessage::Text(body)).map(|_| ()).map_err(|e| println!("send err: {}", e))
+                            );
+                        },
+                        Event::Ready(r) => {},
+                        _ => {}
+                    }
+                    Ok(())
+                }).map_err(|e| println!("rx err: {}", e))
+            );
 
+            reader.from_err()
+                .and_then(|message| {
+                    match message {
+                        OwnedMessage::Text(text) => {
+                            let res: Payload = serde_json::from_str(&text)?; 
+                            Ok(Some(Event::from_payload(res)?))
+                        }
+                        _ => { println!("{:?}", message); Ok(None) }
+                    }
+                })
+                .filter_map(|x| x)
+                .forward(tx)
+                .map(|_| ())
+        }).or_else(|e| {
+            println!("error: {}", e);
+            Ok(())
+        });
+    tokio::run(runner);
     Ok(())
 }
+
+//--Persistant gateway connection--
+//Identify
