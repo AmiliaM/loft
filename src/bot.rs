@@ -1,6 +1,5 @@
-use failure::{bail, Error};
+use failure::Error;
 use reqwest::{header, Client};
-//use serde_json::Value;
 
 #[derive(Deserialize)]
 pub struct DiscordUser {
@@ -15,11 +14,6 @@ pub struct Channel {
     id: String,
     #[serde(rename = "type")]
     ty: i8,
-}
-
-#[derive(Serialize)]
-pub struct Message {
-    content: String,
 }
 
 pub struct LoftBot {
@@ -76,18 +70,16 @@ impl LoftBot {
         let res: Vec<Member> = self.client.get(url).send()?.json()?;
         Ok(res.into_iter().map(|x| x.user ).collect())
     }
-    pub fn create_message(&self, message: Message, channel_id: String) -> Result<(), Error> {
+    pub fn create_message(&self, content: String, channel_id: String) -> Result<(), Error> {
         let url = &format!("https://discordapp.com/api/v6/channes/{}/messages", channel_id);
-        let res = self.client.post(url).form(&message).send()?.text()?;
+        #[derive(Serialize)]
+        struct Message {
+            content: String,
+        }
+        let m = Message {content};
+        let body = serde_json::to_string(&m)?;
+        let res = self.client.post(url).form(&body).send()?.text()?;
         println!("{}", res);
         Ok(())
     }
-    /*pub fn send_heartbeat(&self) {
-        let hb = Heartbeat {
-            op: 1,
-            seq: self.sequence,
-        }; 
-        let body = serde_json::to_string(&hb);
-
-    }*/
 }
