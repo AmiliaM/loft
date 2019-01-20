@@ -1,4 +1,4 @@
-use crate::event::{Payload, Event};
+use crate::event::{self, Payload, Event, Channel, DiscordUser};
 
 use std::time::Duration;
 
@@ -16,28 +16,13 @@ use tokio::timer::Interval;
 
 use serde_json::json;
 
-
-#[derive(Deserialize)]
-pub struct DiscordUser {
-    username: String,
-    discriminator: String,
-    id: String,
-}
-
-#[derive(Deserialize)]
-pub struct Channel {
-    name: String,
-    id: String,
-    #[serde(rename = "type")]
-    ty: i8,
-}
-
 pub struct LoftBot {
     client: Client,
-    guild_id: String,
-    pub token: String,
-    pub gateway: String,
-    pub sequence: Option<usize>,
+    id: String,
+    guild: event::Guild,
+    token: String,
+    gateway: String,
+    sequence: Option<usize>,
     stream: Receiver<Event>,
     heartbeat_sender: Option<Sender<Event>>,
     message_sender: Sender<OwnedMessage>,
@@ -70,7 +55,13 @@ impl LoftBot {
                 let (stx, srx) = mpsc::channel(1024);
                 let bot = LoftBot {
                     client,
-                    guild_id,
+                    id: "0".to_string(),
+                    guild: event::Guild {
+                        id: guild_id,
+                        members: vec!(),
+                        name: String::from(""),
+                        channels: vec!(),
+                    },
                     token,
                     gateway,
                     sequence: None,
@@ -94,7 +85,7 @@ impl LoftBot {
                     .map_err(|x| println!("read err: {}", x))
                 );
                 tokio::spawn(
-                    srx.map_err(|x| failure::err_msg("stream receive error"))
+                    srx.map_err(|_| failure::err_msg("stream receive error"))
                     .forward(writer)
                     .map(|_| ())
                     .map_err(|e| println!("{}", e))
@@ -115,37 +106,37 @@ impl LoftBot {
         Ok(url)
     }
     pub fn get_channels(&self) -> Result<Vec<Channel>, Error> {
-        let url = &format!("https://discordapp.com/api/v6/guilds/{}/channels", self.guild_id);
+        let url = &format!("https://discordapp.com/api/v6/guilds/{}/channels", self.guild.id);
         let mut res: Vec<Channel> = self.client.get(url).send()?.json()?;
         res.retain(|x| x.ty == 0);
         Ok(res)
     }
     pub fn get_online_members(&self) -> Result<Vec<DiscordUser>, Error> {
-        #[derive(Deserialize)]
-        struct Member {
-            user: DiscordUser
-        } 
-        let url = &format!("https://discordapp.com/api/v6/guilds/{}/members", self.guild_id);
-        let res: Vec<Member> = self.client.get(url).send()?.json()?;
+        let url = &format!("https://discordapp.com/api/v6/guilds/{}/members", self.guild.id);
+        let res: Vec<event::Member> = self.client.get(url).send()?.json()?;
         Ok(res.into_iter().map(|x| x.user ).collect())
     }
-    pub fn create_message(&self, content: String, channel_id: String) -> Result<(), Error> {
-        let url = &format!("https://discordapp.com/api/v6/channes/{}/messages", channel_id);
-        #[derive(Serialize)]
-        struct Message {
-            content: String,
-        }
-        let m = Message {content};
-        let body = serde_json::to_string(&m)?;
-        let res = self.client.post(url).form(&body).send()?.text()?;
-        println!("{}", res);
+    pub fn create_message(&self, message: event::OutgoingMessage, channel_id: String) -> Result<(), Error> {
+        let url = &format!("https://discordapp.com/api/v6/channels/{}/messages", channel_id);
+        self.client.post(url).json(&message).send()?;
         Ok(())
     }
     fn send_payload(&self, pl: &Payload) -> Result<(), Error> {
         let body = serde_json::to_string(&pl)?;
         tokio::spawn(
-            self.message_sender.clone().send(OwnedMessage::Text(body)).map(|_| ()).map_err(|e| println!("send err: {}", e))
+            self.message_sender
+                .clone()
+                .send(OwnedMessage::Text(body))
+                .map(|_| ())
+                .map_err(|e| println!("send err: {}", e))
         );
+        Ok(())
+    }
+    fn handle_message(&self, message: event::Message) -> Result<(), Error> {
+        let m = event::OutgoingMessage {
+            content: "Hello".to_string(),
+        };
+        self.create_message(m, message.channel_id)?;
         Ok(())
     }
 }
@@ -193,8 +184,12 @@ impl Future for LoftBot {
                     }; 
                     self.send_payload(&ident)?;
                 },
-                Event::Heartbeat => println!("Received heartbeat"),
-                Event::SendHeartbeat_ => {
+                Event::Ack => println!("Ack"),
+                Event::EventReady(data) => self.id = data.user.id,
+                Event::EventMessage(message) => if message.author.id != self.id {self.handle_message(message)?},
+                Event::EventGuildCreate(guild) => self.guild = guild,
+                Event::EventChannelCreate(channel) => self.guild.channels.push(channel),
+                Event::SendHeartbeat_ | Event::Heartbeat => {
                     let hb = Payload {
                         op: 1,
                         d: match self.sequence {
@@ -206,8 +201,6 @@ impl Future for LoftBot {
                     }; 
                     self.send_payload(&hb)?;
                 },
-                Event::EventReady(r) => println!("Session id: {} ready", r.session_id),
-                Event::Ack => println!("Ack"),
                 Event::UnknownEvent(e) => println!("Got unhandled event {}", e),
                 Event::Unknown(n) => println!("Other event : {}", n),
                 _ => {println!("other message")}
