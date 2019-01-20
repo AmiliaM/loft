@@ -1,5 +1,4 @@
-mod bot;
-use bot::DiscordUser;
+use crate::bot::DiscordUser;
 
 enum NotifLocation {
     Discord,
