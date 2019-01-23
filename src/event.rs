@@ -1,21 +1,9 @@
+use crate::user::{Member, DiscordUser};
+
 #[derive(Deserialize, Debug)]
 pub struct Guild {
-    pub id: String,
-    pub name: String,
     pub members: Vec<Member>,
     pub channels: Vec<Channel>
-}
-
-#[derive(Deserialize, Debug)]
-pub struct Member {
-    pub user: DiscordUser
-} 
-
-#[derive(Deserialize, Debug)]
-pub struct DiscordUser {
-    username: String,
-    discriminator: String,
-    pub id: String,
 }
 
 #[derive(Deserialize, Debug)]

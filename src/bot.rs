@@ -1,6 +1,9 @@
-use crate::event::{self, Payload, Event, Channel, DiscordUser};
+use crate::event::{self, Payload, Event, Channel};
+use crate::command::{parse_message, Action};
+use crate::user::{User, DiscordUser, Member};
 
 use std::time::Duration;
+use std::collections::HashMap;
 
 use failure::Error;
 
@@ -17,36 +20,24 @@ use tokio::timer::Interval;
 use serde_json::json;
 
 pub struct LoftBot {
-    client: Client,
+    quit: bool,
     id: String,
-    guild: event::Guild,
+    guild_id: String,
+    users: Vec<User>,
     token: String,
+    client: Client,
     gateway: String,
     sequence: Option<usize>,
     stream: Receiver<Event>,
     heartbeat_sender: Option<Sender<Event>>,
     message_sender: Sender<OwnedMessage>,
-
-}
-
-fn prepare_gateway(token: &str) -> Result<(Client, String, ClientBuilder<'static>), failure::Error> {
-    let mut headers = header::HeaderMap::new();
-    headers.insert(header::USER_AGENT, 
-        header::HeaderValue::from_static("DiscordBot (bogodynamics.io, 1.0)"));
-    headers.insert(header::AUTHORIZATION, 
-        header::HeaderValue::from_str(token)?);
-    let client = Client::builder()
-        .default_headers(headers)
-        .build()?;
-    let gateway = LoftBot::get_gateway(&client)?;
-    let cb = ClientBuilder::new(&gateway)?;
-    Ok((client, gateway, cb))
+    channels: Vec<Channel>
 }
 
 impl LoftBot {
     pub fn run(guild_id: String) -> impl Future<Item=(), Error=failure::Error> {
         let token = String::from("Bot NTEyMDgxODQ0MzQzMTQ0NDU4.Dxp1hw.7iC-_L8jx8Mf3A8RK3K7IRFQd4w");
-        futures::future::result(prepare_gateway(&token)).and_then(|(client, gateway, cb)| {
+        futures::future::result(LoftBot::prepare_gateway(&token)).and_then(|(client, gateway, cb)| {
             cb.async_connect_secure(None)
             .from_err()
             .and_then(|(s, _)| {
@@ -54,20 +45,18 @@ impl LoftBot {
                 let (tx, rx) = mpsc::channel(1024);
                 let (stx, srx) = mpsc::channel(1024);
                 let bot = LoftBot {
-                    client,
+                    quit: false,
                     id: "0".to_string(),
-                    guild: event::Guild {
-                        id: guild_id,
-                        members: vec!(),
-                        name: String::from(""),
-                        channels: vec!(),
-                    },
+                    guild_id,
+                    users: vec!(),
                     token,
+                    client,
                     gateway,
                     sequence: None,
                     stream: rx,
                     heartbeat_sender: Some(tx.clone()),
                     message_sender: stx,
+                    channels: vec!(),
                 };
                 tokio::spawn(reader.map_err(|x| failure::Error::from(x))
                     .and_then(|message| {
@@ -105,15 +94,29 @@ impl LoftBot {
         let url = format!("{}/?v=6&encoding=json", gw.url);
         Ok(url)
     }
+
+    fn prepare_gateway(token: &str) -> Result<(Client, String, ClientBuilder<'static>), failure::Error> {
+        let mut headers = header::HeaderMap::new();
+        headers.insert(header::USER_AGENT, 
+            header::HeaderValue::from_static("DiscordBot (bogodynamics.io, 1.0)"));
+        headers.insert(header::AUTHORIZATION, 
+            header::HeaderValue::from_str(token)?);
+        let client = Client::builder()
+            .default_headers(headers)
+            .build()?;
+        let gateway = LoftBot::get_gateway(&client)?;
+        let cb = ClientBuilder::new(&gateway)?;
+        Ok((client, gateway, cb))
+    }
     pub fn get_channels(&self) -> Result<Vec<Channel>, Error> {
-        let url = &format!("https://discordapp.com/api/v6/guilds/{}/channels", self.guild.id);
+        let url = &format!("https://discordapp.com/api/v6/guilds/{}/channels", self.guild_id);
         let mut res: Vec<Channel> = self.client.get(url).send()?.json()?;
         res.retain(|x| x.ty == 0);
         Ok(res)
     }
     pub fn get_online_members(&self) -> Result<Vec<DiscordUser>, Error> {
-        let url = &format!("https://discordapp.com/api/v6/guilds/{}/members", self.guild.id);
-        let res: Vec<event::Member> = self.client.get(url).send()?.json()?;
+        let url = &format!("https://discordapp.com/api/v6/guilds/{}/members", self.guild_id);
+        let res: Vec<Member> = self.client.get(url).send()?.json()?;
         Ok(res.into_iter().map(|x| x.user ).collect())
     }
     pub fn create_message(&self, message: event::OutgoingMessage, channel_id: String) -> Result<(), Error> {
@@ -132,11 +135,23 @@ impl LoftBot {
         );
         Ok(())
     }
-    fn handle_message(&self, message: event::Message) -> Result<(), Error> {
-        let m = event::OutgoingMessage {
-            content: "Hello".to_string(),
-        };
-        self.create_message(m, message.channel_id)?;
+    fn quit(&mut self) {
+        println!("quitting");
+        self.quit = true;
+    }
+    fn handle_message(&mut self, message: event::Message) -> Result<(), Error> {
+        match parse_message(message.content) {
+            Action::SendMessage(m) => self.create_message(event::OutgoingMessage {content: m}, message.channel_id)?,
+            Action::ChangeVariable(var, cmd, val) => {
+                message.author.id;
+            },
+            Action::Quit => self.quit(),
+            Action::None => {},
+        }
+        /*let m = event::OutgoingMessage {
+            content: format!("Hello <@!{}>", message.author.id),
+        };*/
+        
         Ok(())
     }
 }
@@ -147,6 +162,7 @@ impl Future for LoftBot {
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         loop {
+            if self.quit { return Ok(Async::Ready(())) }
             let event = match self.stream.poll() {
                 Ok(Async::Ready(Some(e))) => e,
                 Ok(Async::Ready(None)) => return Ok(Async::Ready(())),
@@ -158,9 +174,9 @@ impl Future for LoftBot {
                     match self.heartbeat_sender.take() {
                         Some(e) => {
                                 tokio::spawn(
-                                    Interval::new(tokio::clock::now(), Duration::from_millis(data.heartbeat_interval))
-                                    .map(|_| Event::SendHeartbeat_)
-                                    .map_err(|x| failure::Error::from(x)).forward(e)
+                                    e.sink_map_err(|x| failure::Error::from(x))
+                                    .send_all(Interval::new(tokio::clock::now(), Duration::from_millis(data.heartbeat_interval))
+                                    .map(|_| Event::SendHeartbeat_))
                                     .map(|_| ()).map_err(|e| println!("timer err: {}", e))
                                 );
                         }
@@ -168,16 +184,15 @@ impl Future for LoftBot {
                     }
                     let ident = Payload {
                         op: 2,
-                        d: json!(
-                            {
-                                "token": self.token,
-                                "properties": {
-                                    "$os": "macos",
-                                    "$browser": "loft",
-                                    "$device": "loft"
-                                },
-                                "compress": false,
-                            }
+                        d: json!( {
+                            "token": self.token,
+                            "properties": {
+                                "$os": "macos",
+                                "$browser": "loft",
+                                "$device": "loft"
+                            },
+                            "compress": false,
+                        }
                         ),
                         s: None,
                         t: None,
@@ -187,8 +202,11 @@ impl Future for LoftBot {
                 Event::Ack => println!("Ack"),
                 Event::EventReady(data) => self.id = data.user.id,
                 Event::EventMessage(message) => if message.author.id != self.id {self.handle_message(message)?},
-                Event::EventGuildCreate(guild) => self.guild = guild,
-                Event::EventChannelCreate(channel) => self.guild.channels.push(channel),
+                Event::EventGuildCreate(guild) => {
+                    self.users = guild.members.into_iter().map(|x| User::from_discord(x.user)).collect();
+                    self.channels = guild.channels;
+                },
+                Event::EventChannelCreate(channel) => self.channels.push(channel),
                 Event::SendHeartbeat_ | Event::Heartbeat => {
                     let hb = Payload {
                         op: 1,
@@ -203,7 +221,6 @@ impl Future for LoftBot {
                 },
                 Event::UnknownEvent(e) => println!("Got unhandled event {}", e),
                 Event::Unknown(n) => println!("Other event : {}", n),
-                _ => {println!("other message")}
             }
         }
     }
