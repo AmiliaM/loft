@@ -1,9 +1,10 @@
 use crate::event::{self, Payload, Event, Channel};
 use crate::command::{parse_message, Action};
-use crate::user::{User, DiscordUser, Member};
+use crate::user::{User, DiscordUser, Member, UserVar};
 
 use std::time::Duration;
 use std::collections::HashMap;
+use std::iter::Enumerate;
 
 use failure::Error;
 
@@ -24,6 +25,7 @@ pub struct LoftBot {
     id: String,
     guild_id: String,
     users: Vec<User>,
+    user_map: HashMap<String, usize>,
     token: String,
     client: Client,
     gateway: String,
@@ -46,9 +48,10 @@ impl LoftBot {
                 let (stx, srx) = mpsc::channel(1024);
                 let bot = LoftBot {
                     quit: false,
-                    id: "0".to_string(),
+                    id: String::from("0"),
                     guild_id,
                     users: vec!(),
+                    user_map: HashMap::new(),
                     token,
                     client,
                     gateway,
@@ -139,11 +142,61 @@ impl LoftBot {
         println!("quitting");
         self.quit = true;
     }
+    fn change_var(&mut self, var: UserVar, cmd: Option<String>, val: Option<String>, user_index: usize, channel_id: String) -> Result<(), Error> {
+        match var {
+            UserVar::FavFood => {
+                match cmd.as_ref().map(|x| x.as_str()) {
+                    Some("set") => {
+                        match val {
+                            Some(v) => {
+                                self.users[user_index].favorite_food = Some(v);
+                            },
+                            None => {}
+                        }
+                    },
+                    None => {
+                        let m = match &self.users[user_index].favorite_food {
+                            Some(f) => format!("Your favorite food is {}", f),
+                            None => format!("You have no favorite food"),
+                        };
+                        self.create_message(event::OutgoingMessage {content: m}, channel_id)?;
+                    }
+                    _ => {}
+                }
+            },
+            /*UserVar::Nicks => {
+                match cmd.as_ref().map(|x| x.as_str()) {
+                    Some("add") => {
+                        match val {
+                            Some(v) => {
+                                self.users[user_index].notif_location_default = None;
+                            },
+                            None => {}
+                        }
+                    },
+                    None => {
+                        let m = match &self.users[user_index].favorite_food {
+                            Some(f) => format!("Your favorite food is {}", f),
+                            None => format!("Your favorite food is "),
+                        };
+                        self.create_message(event::OutgoingMessage {content: m}, channel_id)?;
+                    }
+                    _ => {}
+                } 
+            },*/
+            UserVar::None => {},
+            _ => {},
+        }
+        Ok(())
+    }
     fn handle_message(&mut self, message: event::Message) -> Result<(), Error> {
         match parse_message(message.content) {
             Action::SendMessage(m) => self.create_message(event::OutgoingMessage {content: m}, message.channel_id)?,
             Action::ChangeVariable(var, cmd, val) => {
-                message.author.id;
+                return match self.user_map.get(&message.author.id) {
+                    Some(i) => self.change_var(var, cmd, val, *i, message.channel_id),
+                    None => Ok(()),
+                };
             },
             Action::Quit => self.quit(),
             Action::None => {},
@@ -204,6 +257,9 @@ impl Future for LoftBot {
                 Event::EventMessage(message) => if message.author.id != self.id {self.handle_message(message)?},
                 Event::EventGuildCreate(guild) => {
                     self.users = guild.members.into_iter().map(|x| User::from_discord(x.user)).collect();
+                    for (i, user) in self.users.iter().enumerate() {
+                        self.user_map.insert(user.discord_user.id.clone(), i);
+                    }
                     self.channels = guild.channels;
                 },
                 Event::EventChannelCreate(channel) => self.channels.push(channel),

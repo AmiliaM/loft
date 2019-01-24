@@ -38,7 +38,4 @@ impl User {
             favorite_food: None
         }
     }
-    pub fn set_variable(id: String, var: UserVar, value: String) {
-        
-    }
 }
