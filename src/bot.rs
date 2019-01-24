@@ -1,10 +1,9 @@
 use crate::event::{self, Payload, Event, Channel};
 use crate::command::{parse_message, Action};
-use crate::user::{User, DiscordUser, Member, UserVar};
+use crate::user::{User, DiscordUser, Member, UserVar, NotifLocation};
 
 use std::time::Duration;
 use std::collections::HashMap;
-use std::iter::Enumerate;
 
 use failure::Error;
 
@@ -74,13 +73,13 @@ impl LoftBot {
                     .filter_map(|x| x)
                     .forward(tx)
                     .map(|_| ())
-                    .map_err(|x| println!("read err: {}", x))
+                    .map_err(|x| println!("Read error: {}", x))
                 );
                 tokio::spawn(
                     srx.map_err(|_| failure::err_msg("stream receive error"))
                     .forward(writer)
                     .map(|_| ())
-                    .map_err(|e| println!("{}", e))
+                    .map_err(|e| println!("Write error: {}", e))
                 );
                 bot
             })
@@ -134,12 +133,12 @@ impl LoftBot {
                 .clone()
                 .send(OwnedMessage::Text(body))
                 .map(|_| ())
-                .map_err(|e| println!("send err: {}", e))
+                .map_err(|e| println!("Send error: {}", e))
         );
         Ok(())
     }
     fn quit(&mut self) {
-        println!("quitting");
+        println!("Quitting...");
         self.quit = true;
     }
     fn change_var(&mut self, var: UserVar, cmd: Option<String>, val: Option<String>, user_index: usize, channel_id: String) -> Result<(), Error> {
@@ -164,28 +163,53 @@ impl LoftBot {
                     _ => {}
                 }
             },
-            /*UserVar::Nicks => {
+            UserVar::Nick => {
                 match cmd.as_ref().map(|x| x.as_str()) {
-                    Some("add") => {
+                    Some("set") => {
                         match val {
                             Some(v) => {
-                                self.users[user_index].notif_location_default = None;
+                                self.users[user_index].irc_name = Some(v);
                             },
                             None => {}
                         }
                     },
                     None => {
-                        let m = match &self.users[user_index].favorite_food {
-                            Some(f) => format!("Your favorite food is {}", f),
-                            None => format!("Your favorite food is "),
+                        let m = match &self.users[user_index].irc_name {
+                            Some(name) => format!("Your IRC name is {}", name),
+                            None => format!("You have no IRC name"),
+                        };
+                        self.create_message(event::OutgoingMessage {content: m}, channel_id)?;
+                    }
+                    _ => {}
+                }
+            }
+            UserVar::Notif => {
+                match cmd.as_ref().map(|x| x.as_str()) {
+                    Some("set") => {
+                        match val.as_ref().map(|x| x.as_str()) {
+                            Some("discord") => self.users[user_index].notif_location = Some(NotifLocation::Discord),
+                            Some("irc") => self.users[user_index].notif_location = Some(NotifLocation::IRC),
+                            None => {},
+                            _ => {},
+                        }
+                    },
+                    None => {
+                        let m = match &self.users[user_index].notif_location {
+                            Some(location) => format!(
+                                "Notifying on {}", 
+                                match location {
+                                    NotifLocation::Discord => "Discord",
+                                    NotifLocation::IRC => "IRC"
+                                }
+                            ),
+                            None => format!("No notification preference set. Your notifications will be sent to discord."),
                         };
                         self.create_message(event::OutgoingMessage {content: m}, channel_id)?;
                     }
                     _ => {}
                 } 
-            },*/
+            },
             UserVar::None => {},
-            _ => {},
         }
         Ok(())
     }
@@ -201,10 +225,6 @@ impl LoftBot {
             Action::Quit => self.quit(),
             Action::None => {},
         }
-        /*let m = event::OutgoingMessage {
-            content: format!("Hello <@!{}>", message.author.id),
-        };*/
-        
         Ok(())
     }
 }
@@ -230,7 +250,7 @@ impl Future for LoftBot {
                                     e.sink_map_err(|x| failure::Error::from(x))
                                     .send_all(Interval::new(tokio::clock::now(), Duration::from_millis(data.heartbeat_interval))
                                     .map(|_| Event::SendHeartbeat_))
-                                    .map(|_| ()).map_err(|e| println!("timer err: {}", e))
+                                    .map(|_| ()).map_err(|e| println!("Timer error: {}", e))
                                 );
                         }
                         None => (),
@@ -252,7 +272,7 @@ impl Future for LoftBot {
                     }; 
                     self.send_payload(&ident)?;
                 },
-                Event::Ack => println!("Ack"),
+                Event::Ack => {},
                 Event::EventReady(data) => self.id = data.user.id,
                 Event::EventMessage(message) => if message.author.id != self.id {self.handle_message(message)?},
                 Event::EventGuildCreate(guild) => {
@@ -261,6 +281,7 @@ impl Future for LoftBot {
                         self.user_map.insert(user.discord_user.id.clone(), i);
                     }
                     self.channels = guild.channels;
+                    println!("Ready");
                 },
                 Event::EventChannelCreate(channel) => self.channels.push(channel),
                 Event::SendHeartbeat_ | Event::Heartbeat => {
@@ -276,7 +297,7 @@ impl Future for LoftBot {
                     self.send_payload(&hb)?;
                 },
                 Event::UnknownEvent(e) => println!("Got unhandled event {}", e),
-                Event::Unknown(n) => println!("Other event : {}", n),
+                Event::Unknown(n) => println!("Other event: {}", n),
             }
         }
     }

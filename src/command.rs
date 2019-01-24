@@ -8,12 +8,6 @@ pub enum Action {
 }
 
 pub fn parse_message(message: String) -> Action {
-    //$var {favfood, notif, nicks}
-    //  () - show
-    //  set
-    //  add - nicks only
-    //  delete - nicks only
-    //!joke
     let mut chars = message.chars();
     return match chars.next() {
         Some(c) => match c {
@@ -29,10 +23,9 @@ pub fn parse_message(message: String) -> Action {
             '$' => {
                 let text = chars.collect::<String>();
                 let args: Vec<_> = text.split(' ').collect();
-                println!("{:?}", args);
                 let var = match args[0] {
                     "favfood" => UserVar::FavFood,
-                    "nicks" => UserVar::Nicks,
+                    "nick" => UserVar::Nick,
                     "notif" => UserVar::Notif,
                     _ => UserVar::None,
                 };

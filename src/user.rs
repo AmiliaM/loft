@@ -10,22 +10,22 @@ pub struct DiscordUser {
     pub id: String,
 }
 
-enum NotifLocation {
+pub enum NotifLocation {
     Discord,
     IRC,
 }
 
 pub enum UserVar {
-    Nicks,
     Notif,
+    Nick,
     FavFood,
     None,
 }
 
 pub struct User {
     pub discord_user: DiscordUser,
-    irc_names: Option<Vec<String>>,
-    notif_location_default: Option<NotifLocation>,
+    pub irc_name: Option<String>,
+    pub notif_location: Option<NotifLocation>,
     pub favorite_food: Option<String>
 }
 
@@ -33,8 +33,8 @@ impl User {
     pub fn from_discord(user: DiscordUser) -> User {
         User {
             discord_user: user,
-            irc_names: None, 
-            notif_location_default: None, 
+            irc_name: None, 
+            notif_location: None, 
             favorite_food: None
         }
     }
