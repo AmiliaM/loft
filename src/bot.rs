@@ -11,6 +11,7 @@ use reqwest::{header, Client};
 
 use futures::{Future, Poll, Async, Stream};
 use futures::sync::mpsc::{self, Sender, Receiver};
+use futures::sync::oneshot;
 use futures::sink::Sink;
 
 use websocket::{ClientBuilder, OwnedMessage};
@@ -32,7 +33,9 @@ pub struct LoftBot {
     stream: Receiver<Event>,
     heartbeat_sender: Option<Sender<Event>>,
     message_sender: Sender<OwnedMessage>,
-    channels: Vec<Channel>
+    channels: Vec<Channel>,
+    shutdown: Option<oneshot::Receiver<()>>,
+    shutdowntx: Option<oneshot::Sender<()>>,
 }
 
 impl LoftBot {
@@ -45,6 +48,7 @@ impl LoftBot {
                 let (writer, reader) = s.split();
                 let (tx, rx) = mpsc::channel(1024);
                 let (stx, srx) = mpsc::channel(1024);
+                let (shutdowntx, shutdownrx) = oneshot::channel();
                 let bot = LoftBot {
                     quit: false,
                     id: String::from("0"),
@@ -59,6 +63,8 @@ impl LoftBot {
                     heartbeat_sender: Some(tx.clone()),
                     message_sender: stx,
                     channels: vec!(),
+                    shutdown: Some(shutdownrx),
+                    shutdowntx: Some(shutdowntx),
                 };
                 tokio::spawn(reader.map_err(|x| failure::Error::from(x))
                     .and_then(|message| {
@@ -234,26 +240,30 @@ impl Future for LoftBot {
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        loop {
-            if self.quit { return Ok(Async::Ready(())) }
+        while !self.quit {
             let event = match self.stream.poll() {
                 Ok(Async::Ready(Some(e))) => e,
-                Ok(Async::Ready(None)) => return Ok(Async::Ready(())),
+                Ok(Async::Ready(None)) => { self.quit = true; break; },
                 Ok(Async::NotReady) => return Ok(Async::NotReady),
                 Err(_) => return Err(failure::err_msg("stream receive error")),
             };
             match event {
                 Event::Hello(data) => {
-                    match self.heartbeat_sender.take() {
-                        Some(e) => {
+                    match (self.heartbeat_sender.take(), self.shutdown.take()) {
+                        (Some(e), Some(shutdown)) => {
                                 tokio::spawn(
-                                    e.sink_map_err(|x| failure::Error::from(x))
-                                    .send_all(Interval::new(tokio::clock::now(), Duration::from_millis(data.heartbeat_interval))
-                                    .map(|_| Event::SendHeartbeat_))
-                                    .map(|_| ()).map_err(|e| println!("Timer error: {}", e))
+                                    Interval::new(tokio::clock::now(), Duration::from_millis(data.heartbeat_interval))
+                                    .map(|_| Event::SendHeartbeat_)
+                                    .map_err(|e| failure::Error::from(e))
+                                    .forward(e)
+                                    .map(|_| ())
+                                    .map_err(|e| println!("Timer error: {}", e))
+                                    .select(shutdown.map_err(|_| ()))
+                                    .map(|_| ())
+                                    .map_err(|_| ())
                                 );
                         }
-                        None => (),
+                        (..) => (),
                     }
                     let ident = Payload {
                         op: 2,
@@ -300,5 +310,9 @@ impl Future for LoftBot {
                 Event::Unknown(n) => println!("Other event: {}", n),
             }
         }
+        if let Some(tx) = self.shutdowntx.take() {
+            tx.send(()).map_err(|_| failure::err_msg("failed to stop timer"))?;
+        }
+        Ok(Async::Ready(()))
     }
 }
