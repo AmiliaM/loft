@@ -1,9 +1,9 @@
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize)]
 pub struct Member {
     pub user: DiscordUser
 } 
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize)]
 pub struct DiscordUser {
     pub username: String,
     pub discriminator: String,

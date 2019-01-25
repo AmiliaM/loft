@@ -14,7 +14,9 @@ pub fn parse_message(message: String) -> Action {
             '!' => {
                 match chars.collect::<String>().as_str() {
                     "joke" => {
-                        Action::SendMessage("Why did the tomato blush?\nBecause it saw the salad dressing!".to_string())
+                        let f = std::fs::read_to_string("jokes.txt").unwrap().replace("\\n", "\n");
+                        let jokes: Vec<_> = f.lines().collect();
+                        Action::SendMessage(jokes[0].to_string())
                     },
                     "quit" => Action::Quit,
                     _ => {Action::None},

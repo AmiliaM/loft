@@ -4,8 +4,15 @@ use crate::user::{User, DiscordUser, Member, UserVar, NotifLocation};
 
 use std::time::Duration;
 use std::collections::HashMap;
+use std::net::ToSocketAddrs;
+
+use crate::irc;
 
 use failure::Error;
+
+use serde_json::json;
+
+use tokio::timer::Interval;
 
 use reqwest::{header, Client};
 
@@ -16,16 +23,13 @@ use futures::sink::Sink;
 
 use websocket::{ClientBuilder, OwnedMessage};
 
-use tokio::timer::Interval;
-
-use serde_json::json;
-
 pub struct LoftBot {
     quit: bool,
     id: String,
     guild_id: String,
     users: Vec<User>,
     user_map: HashMap<String, usize>,
+    channels: Vec<Channel>,
     token: String,
     client: Client,
     gateway: String,
@@ -33,26 +37,31 @@ pub struct LoftBot {
     stream: Receiver<Event>,
     heartbeat_sender: Option<Sender<Event>>,
     message_sender: Sender<OwnedMessage>,
-    channels: Vec<Channel>,
     shutdown: Option<oneshot::Receiver<()>>,
     shutdowntx: Option<oneshot::Sender<()>>,
 }
 
 impl LoftBot {
-    pub fn run(guild_id: String) -> impl Future<Item=(), Error=failure::Error> {
-        let token = String::from("Bot NTEyMDgxODQ0MzQzMTQ0NDU4.Dxp1hw.7iC-_L8jx8Mf3A8RK3K7IRFQd4w");
-        futures::future::result(LoftBot::prepare_gateway(&token)).and_then(|(client, gateway, cb)| {
+    pub fn run(args: HashMap<String, String>) -> impl Future<Item=(), Error=failure::Error> {
+        let token = args.get("token").expect("poppis").to_string();
+        futures::future::result(LoftBot::prepare_gateway(&token)).and_then(move |(client, gateway, cb)| {
             cb.async_connect_secure(None)
             .from_err()
-            .and_then(|(s, _)| {
-                let (writer, reader) = s.split();
+            .and_then(move |(s, _)| {
                 let (tx, rx) = mpsc::channel(1024);
+                irc::connect(
+                    args.get("host").expect("blep").to_socket_addrs().expect("blel").next().expect("hiya"), 
+                    args.get("nick").expect("blelele"),
+                    args.get("user").expect("melm"),
+                    tx.clone()
+                );
+                let (writer, reader) = s.split();
                 let (stx, srx) = mpsc::channel(1024);
                 let (shutdowntx, shutdownrx) = oneshot::channel();
                 let bot = LoftBot {
                     quit: false,
                     id: String::from("0"),
-                    guild_id,
+                    guild_id: args.get("guildid").expect("bleppery").to_string(),
                     users: vec!(),
                     user_map: HashMap::new(),
                     token,
@@ -305,6 +314,9 @@ impl Future for LoftBot {
                         t: None,
                     }; 
                     self.send_payload(&hb)?;
+                },
+                Event::IRCEvent(event) => {
+                    println!("{:?}", event);
                 },
                 Event::UnknownEvent(e) => println!("Got unhandled event {}", e),
                 Event::Unknown(n) => println!("Other event: {}", n),

@@ -1,0 +1,7 @@
+host = irc.freenode.net:6697
+tls = true
+nick = LoftBot
+user = Loft
+realname = Loft
+guildid = 533354016818593846
+token = Bot NTEyMDgxODQ0MzQzMTQ0NDU4.Dxp1hw.7iC-_L8jx8Mf3A8RK3K7IRFQd4w

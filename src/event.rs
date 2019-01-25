@@ -1,12 +1,13 @@
 use crate::user::{Member, DiscordUser};
+use crate::irc;
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize)]
 pub struct Guild {
     pub members: Vec<Member>,
     pub channels: Vec<Channel>
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize)]
 pub struct Channel {
     name: String,
     id: String,
@@ -22,13 +23,13 @@ pub struct Payload {
     pub t: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct ReadyMsg {
     pub session_id: String,
     pub user: DiscordUser, 
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize)]
 pub struct Message {
     pub content: String,
     pub channel_id: String,
@@ -40,13 +41,12 @@ pub struct OutgoingMessage {
     pub content: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct HelloMsg {
     pub heartbeat_interval: u64,
 }
 
 //Both internal and extenal events or message content types
-#[derive(Debug)]
 pub enum Event {
     Hello(HelloMsg), 
     Heartbeat,
@@ -57,6 +57,7 @@ pub enum Event {
     EventChannelCreate(Channel),
     UnknownEvent(String),
     SendHeartbeat_,
+    IRCEvent(irc::Event),
     Unknown(i8),
 }
 

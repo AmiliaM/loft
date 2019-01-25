@@ -13,3 +13,4 @@ websocket = "*"
 futures = "0.1"
 failure = "*"
 tokio = "*"
+xirc = { path = "../xirc" }
