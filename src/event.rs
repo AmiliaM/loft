@@ -7,7 +7,7 @@ pub struct Guild {
     pub channels: Vec<Channel>
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct Channel {
     name: String,
     id: String,

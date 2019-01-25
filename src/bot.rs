@@ -29,6 +29,7 @@ pub struct LoftBot {
     guild_id: String,
     users: Vec<User>,
     user_map: HashMap<String, usize>,
+    irc_users: Vec<String>,
     channels: Vec<Channel>,
     token: String,
     client: Client,
@@ -36,6 +37,7 @@ pub struct LoftBot {
     sequence: Option<usize>,
     stream: Receiver<Event>,
     heartbeat_sender: Option<Sender<Event>>,
+    irc_sender: Sender<xirc::Command>,
     message_sender: Sender<OwnedMessage>,
     shutdown: Option<oneshot::Receiver<()>>,
     shutdowntx: Option<oneshot::Sender<()>>,
@@ -49,11 +51,13 @@ impl LoftBot {
             .from_err()
             .and_then(move |(s, _)| {
                 let (tx, rx) = mpsc::channel(1024);
+                let (irctx, ircrx) = mpsc::channel(1024);
                 irc::connect(
                     args.get("host").expect("blep").to_socket_addrs().expect("blel").next().expect("hiya"), 
                     args.get("nick").expect("blelele"),
                     args.get("user").expect("melm"),
-                    tx.clone()
+                    tx.clone(),
+                    ircrx
                 );
                 let (writer, reader) = s.split();
                 let (stx, srx) = mpsc::channel(1024);
@@ -64,12 +68,14 @@ impl LoftBot {
                     guild_id: args.get("guildid").expect("bleppery").to_string(),
                     users: vec!(),
                     user_map: HashMap::new(),
+                    irc_users: vec!(),
                     token,
                     client,
                     gateway,
                     sequence: None,
                     stream: rx,
                     heartbeat_sender: Some(tx.clone()),
+                    irc_sender: irctx,
                     message_sender: stx,
                     channels: vec!(),
                     shutdown: Some(shutdownrx),
@@ -96,6 +102,7 @@ impl LoftBot {
                     .map(|_| ())
                     .map_err(|e| println!("Write error: {}", e))
                 );
+                println!("{:?}", bot.get_channels());
                 bot
             })
         })
@@ -317,6 +324,33 @@ impl Future for LoftBot {
                 },
                 Event::IRCEvent(event) => {
                     println!("{:?}", event);
+                    match event.command {
+                        xirc::Command::Reply(xirc::Numeric(1)) => {
+                            tokio::spawn(
+                                self.irc_sender.clone().send(xirc::Command::Join(vec!("##cosi".to_string()), None)).map_err(|_| println!("IRC Send err")).map(|_| ())
+                            );
+                        },
+                        xirc::Command::Notice(xirc::CommandTarget::User(user), notice) => println!("IRC User {} notice: {}", user, notice),
+                        xirc::Command::Notice(xirc::CommandTarget::Channel(channel), notice) => println!("IRC Channel {} notice: {}", channel, notice),
+                        xirc::Command::PrivMsg(xirc::CommandTarget::Channel(channel), msg) => {
+                            match event.source {
+                                Some(xirc::EventSource::User(hm)) => {
+                                    if hm.nick != "LoftBot" {
+                                        let m = format!("<{}>: {}", hm.nick, msg);
+                                        self.create_message(event::OutgoingMessage {content: m}, "533354016818593850".to_string())?;
+                                    }
+                                },
+                                _ => {},
+                            }
+                        },
+                        xirc::Command::Ping(name, arg) => {
+                            tokio::spawn(
+                                self.irc_sender.clone().send(xirc::Command::Pong(name, arg)).map(|_| ()).map_err(|_| ())
+                            );
+                        }
+                        _event => println!("Unknown IRC event: {:?}", _event),
+                    }
+                    
                 },
                 Event::UnknownEvent(e) => println!("Got unhandled event {}", e),
                 Event::Unknown(n) => println!("Other event: {}", n),
